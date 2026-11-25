@@ -57,7 +57,9 @@
     aubDeep: [120, 92, 168],
     heart: [238, 120, 160],  // 树尖的心
     gold: [231, 206, 123],   // 烟花·金
-    jade: [159, 224, 140]    // 烟花·绿
+    jade: [159, 224, 140],   // 烟花·绿
+    mGold: [255, 214, 150],  // 流星·粉金
+    mPink: [255, 176, 214]   // 流星·粉
   };
   const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
 
@@ -167,11 +169,35 @@
       [0.34, rgba(PAL.aubDeep, 0.06)],
       [1, rgba(PAL.aubDeep, 0)]
     ]);
+    // 流星 / 暖色星点：白芯 + 粉金晕
+    SPR.mGold = radial(s * 3, [
+      [0, rgba([255, 250, 236], 1)],
+      [0.14, rgba(PAL.mGold, 0.62)],
+      [0.42, rgba(PAL.mGold, 0.16)],
+      [1, rgba(PAL.mGold, 0)]
+    ]);
+    SPR.mPink = radial(s * 3, [
+      [0, rgba([255, 246, 252], 1)],
+      [0.14, rgba(PAL.mPink, 0.62)],
+      [0.42, rgba(PAL.mPink, 0.16)],
+      [1, rgba(PAL.mPink, 0)]
+    ]);
+    // 流星拖尾用的纯色柔雾（无白芯）
+    SPR.mTrailGold = radial(s * 2, [
+      [0, rgba(PAL.mGold, 0.68)],
+      [0.32, rgba(PAL.mGold, 0.22)],
+      [1, rgba(PAL.mGold, 0)]
+    ]);
+    SPR.mTrailPink = radial(s * 2, [
+      [0, rgba(PAL.mPink, 0.68)],
+      [0.32, rgba(PAL.mPink, 0.22)],
+      [1, rgba(PAL.mPink, 0)]
+    ]);
   }
 
   /* ------------------------- 场景数据 ------------------------- */
 
-  const S = { band: [], mist: [], pool: [], dust: [], heart: [], stars: [], bokeh: [], snow: [], bursts: [] };
+  const S = { band: [], mist: [], pool: [], dust: [], heart: [], stars: [], bokeh: [], snow: [], bursts: [], meteors: [] };
 
   function buildScene() {
     RNG = mulberry32(20251225);
@@ -181,6 +207,7 @@
     buildHeart();
     buildSky();
     buildBursts();
+    buildMeteors();
   }
 
   // 圆锥半径曲线：底宽顶收，最底部微微外翻
@@ -191,10 +218,11 @@
   }
 
   function buildTree() {
-    const nBand = Math.round(13000 * Q);
-    const nGlow = Math.round(3200 * Q);
-    const nDust = Math.round(9000 * Q);
-    const nMist = Math.round(2600 * Q);
+    const nBand = Math.round(11000 * Q);
+    const nGlow = Math.round(1600 * Q);
+    const nDust = Math.round(6000 * Q);
+    const nMist = Math.round(2400 * Q);
+    const nInner = Math.round(15000 * Q);
 
     // 0) 锥体雾：把螺旋之间的空隙填成一团发光锥体
     for (let i = 0; i < nMist; i++) {
@@ -206,7 +234,7 @@
       S.mist.push({
         r: rad, th: ang, u,
         sz: K * (0.026 + rnd() * 0.062),
-        a: (0.009 + rnd() * 0.022) * (0.22 + 0.78 * (rad / R0)),
+        a: (0.020 + rnd() * 0.048) * (0.22 + 0.78 * (rad / R0)) * (0.55 + 0.45 * t),
         af: clamp(rad / (R0 * 0.5), 0, 1),
         tw: 0, ph: rnd() * TAU, tws: 0,
         d0: 0.10 + (1 - t) * 0.3 + rnd() * 1.5,
@@ -280,6 +308,42 @@
         sth: ang + 3.0 + rnd() * 2.0
       });
     }
+
+    // 4) 锥体内部填充：填满两圈螺旋之间的"留白"，细颗粒 + 少量亮点，不抢光带
+    for (let i = 0; i < nInner; i++) {
+      let t = Math.pow(rnd(), 0.88);
+      // 一半以上正对两圈螺旋的中点，让留白处也有星尘
+      if (rnd() < 0.58) {
+        const gi = Math.floor(t * CFG.turns);
+        t = clamp((gi + 0.5 + (rnd() - 0.5) * 0.62) / CFG.turns, 0.004, 1);
+      }
+      const frac = 0.10 + Math.pow(rnd(), 0.62) * 0.86;
+      const rad = radiusAt(t) * frac;
+      const ang = rnd() * TAU;
+      const u = t * TH + (rnd() - 0.5) * TH * 0.028;
+      const rf = clamp(rad / (R0 * 0.55), 0, 1);      // 越靠外越亮，避免中心出现亮柱
+      const kind = rnd();                             // 0.72 细粒 / 0.18 柔雾 / 0.10 闪烁
+      const soft = kind > 0.72 && kind <= 0.90;
+      const sparkle = kind > 0.90;
+      S.dust.push({
+        r: rad, th: ang, u,
+        sz: K * (soft ? 0.008 + rnd() * 0.014
+          : sparkle ? 0.0030 + rnd() * 0.0044
+            : 0.0016 + rnd() * rnd() * 0.0042),
+        a: (soft ? 0.050 + rnd() * 0.060
+          : sparkle ? 0.32 + rnd() * 0.36
+            : 0.12 + rnd() * 0.22) * (0.16 + 0.84 * rf),
+        af: clamp(rad / (R0 * 0.34), 0, 1),
+        tw: rnd() < (sparkle ? 0.85 : 0.45) ? 1 : 0,
+        ph: rnd() * TAU,
+        tws: 0.9 + rnd() * 3.4,
+        d0: 0.16 + (1 - t) * 0.25 + rnd() * 1.45,
+        dur: 1.0 + rnd() * 0.6,
+        sr: R0 * (0.3 + rnd() * 1.6),
+        su: -TH * (0.1 + rnd() * 0.32),
+        sth: ang + 2.6 + rnd() * 2.2
+      });
+    }
   }
 
   function buildPool() {
@@ -326,15 +390,31 @@
   }
 
   function buildSky() {
-    const nStar = Math.round(1150 * Q) + 260;
+    // 主星场（含 8% 粉/金星点）
+    const nStar = Math.round(2300 * Q) + 700;
     for (let i = 0; i < nStar; i++) {
+      const tint = rnd();
       S.stars.push({
         x: rnd() * W, y: rnd() * H,
         sz: K * (0.0014 + Math.pow(rnd(), 3) * 0.0058),
-        a: 0.12 + rnd() * 0.72,
+        a: 0.10 + rnd() * 0.68,
         ph: rnd() * TAU,
         sp: 0.4 + rnd() * 1.8,
-        d0: rnd() * 0.9
+        d0: rnd() * 0.9,
+        c: tint < 0.05 ? 1 : (tint < 0.09 ? 2 : 0)
+      });
+    }
+    // 远景细碎星尘，补一层"银河感"
+    const nFine = Math.round(1100 * Q) + 300;
+    for (let i = 0; i < nFine; i++) {
+      S.stars.push({
+        x: rnd() * W, y: rnd() * H,
+        sz: K * (0.0008 + Math.pow(rnd(), 2) * 0.0022),
+        a: 0.05 + rnd() * 0.24,
+        ph: rnd() * TAU,
+        sp: 0.3 + rnd() * 1.2,
+        d0: rnd() * 1.2,
+        c: 0
       });
     }
     for (let i = 0; i < 6; i++) {
@@ -374,6 +454,81 @@
       });
       t += CFG.fireMin + rnd() * (CFG.fireMax - CFG.fireMin);
     }
+  }
+
+  /* ---------------- 流星：粉金色，斜掠而过，带渐隐拖尾 ---------------- */
+
+  function pushMeteor(t) {
+    const right = rnd() < 0.55;                        // 从右上往左下 / 从左上往右下
+    const ang = right ? 0.62 + rnd() * 0.55 : Math.PI - (0.62 + rnd() * 0.55);
+    S.meteors.push({
+      t,
+      x: (right ? 0.26 + rnd() * 0.80 : 0.02 + rnd() * 0.72) * W,
+      y: (-0.07 + rnd() * 0.40) * H,
+      ang,
+      v: K * (0.62 + rnd() * 0.60),
+      len: K * (0.10 + rnd() * 0.18),
+      life: 1.15 + rnd() * 1.05,
+      w: 0.0013 + rnd() * 0.0015,
+      hs: 0.009 + rnd() * 0.010,
+      gold: rnd() < 0.45
+    });
+  }
+
+  function buildMeteors() {
+    S.meteorNext = 3.2;
+    while (S.meteorNext < 40) {
+      pushMeteor(S.meteorNext);
+      S.meteorNext += 1.9 + rnd() * 2.6;
+    }
+  }
+
+  function ensureMeteors(time) {
+    let guard = 0;
+    while (S.meteorNext < time + 30 && guard++ < 40) {
+      pushMeteor(S.meteorNext);
+      S.meteorNext += 1.9 + rnd() * 2.6;
+    }
+    if (S.meteors.length > 90) S.meteors.splice(0, 45);
+  }
+
+  function drawMeteors(time) {
+    ensureMeteors(time);
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.lineCap = 'round';
+    for (let i = 0; i < S.meteors.length; i++) {
+      const m = S.meteors[i];
+      const age = time - m.t;
+      if (age < 0 || age > m.life) continue;
+      const p = age / m.life;
+      const fade = Math.sin(Math.PI * Math.pow(p, 0.65));
+      const dist = m.v * age;
+      const dx = Math.cos(m.ang), dy = Math.sin(m.ang);
+      const hx = m.x + dx * dist, hy = m.y + dy * dist;
+      const tl = m.len * (0.30 + 0.70 * Math.sin(Math.PI * p));
+      const tx = hx - dx * tl, ty = hy - dy * tl;
+      const col = m.gold ? PAL.mGold : PAL.mPink;
+      const trailSpr = m.gold ? SPR.mTrailGold : SPR.mTrailPink;
+
+      // 拖尾：沿尾迹撒一串由小到大的柔雾，末端最亮
+      const N = 26;
+      const span = Math.hypot(hx - tx, hy - ty) || 1;
+      for (let k = 0; k < N; k++) {
+        const q = k / (N - 1);                       // 0 尾 → 1 头
+        const px = tx + (hx - tx) * q;
+        const py = ty + (hy - ty) * q;
+        const rad = Math.max(1.8, span * 0.26 * (0.30 + 0.70 * q) + K * 0.0018);
+        ctx.globalAlpha = clamp(Math.pow(q, 1.9) * 0.46 * fade, 0, 1);
+        ctx.drawImage(trailSpr, px - rad / 2, py - rad / 2, rad, rad);
+      }
+
+      const hs = K * m.hs * (0.75 + 0.45 * fade);
+      ctx.globalAlpha = clamp(0.95 * fade, 0, 1);
+      ctx.drawImage(m.gold ? SPR.mGold : SPR.mPink, hx - hs / 2, hy - hs / 2, hs, hs);
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
   }
 
   /* ------------------------- 渐变 / 颗粒贴图 ------------------------- */
@@ -503,7 +658,8 @@
       const a = s.a * fin * tw;
       const sz = s.sz * (0.85 + tw * 0.35);
       ctx.globalAlpha = clamp(a, 0, 1);
-      ctx.drawImage(SPR.star, s.x - sz / 2, s.y - sz / 2, sz, sz);
+      const spr = s.c === 1 ? SPR.mGold : (s.c === 2 ? SPR.mPink : SPR.star);
+      ctx.drawImage(spr, s.x - sz / 2, s.y - sz / 2, sz, sz);
     }
     for (const s of S.snow) {
       const y = (s.y + time * s.v) % (H + K * 0.1);
@@ -512,6 +668,7 @@
       ctx.globalAlpha = clamp(s.a * (0.6 + 0.4 * Math.sin(time * 0.9 + s.ph)), 0, 1);
       ctx.drawImage(SPR.dust, x - sz / 2, y - sz / 2, sz, sz);
     }
+    ctx.globalAlpha = 1;
   }
 
   function drawBursts(time) {
@@ -520,9 +677,9 @@
       if (age < 0 || age > 1.25) continue;
       const p = age / 1.25;
       const r2 = mulberry32(b.seed);
-      const cols = b.color === 'gold' ? [PAL.gold, PAL.jade] : [PAL.heart, PAL.hibHi];
+      const cols = b.color === 'gold' ? [PAL.mGold, PAL.hibHi] : [PAL.mPink, PAL.hibHi];
       for (let i = 0; i < 44; i++) {
-        const ang = (i / 44) * TAU + r2() * 0.3;
+        const ang = (i / 44) * TAU + r2() * 0.9;
         const spd = b.scale * (0.25 + Math.pow(r2(), 0.6) * 0.85);
         const dx = Math.cos(ang) * spd * p * 1.35;
         const dy = Math.sin(ang) * spd * p * 1.35 + b.scale * 0.65 * p * p;
@@ -632,6 +789,7 @@
     ctx.globalCompositeOperation = 'lighter';
 
     drawSky(time);
+    drawMeteors(time);
     drawBaseGlow();
     drawLayer(S.pool, time, spin * 1.35, breathe, 1, SPR.core);
     drawLayer(S.mist, time, spin, breathe, 1, SPR.haze);
@@ -655,9 +813,9 @@
 
     const dt = now - last;
     last = now;
-    if (t > 1.4 && t < CFG.intro + 2.5) {
+    if (t > 1.4 && t < 12 && downgraded < 2) {
       slow = slow * 0.9 + dt * 0.1;
-      if (slow > 26 && downgraded < 1) {
+      if (slow > 26 && downgraded < 2) {
         downgraded++;
         Q *= 0.62;
         buildScene();
