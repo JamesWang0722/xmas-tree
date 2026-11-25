@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Merry Christmas · 电子圣诞树</title>
+<meta name="theme-color" content="#040109" />
+<meta name="description" content="Merry Christmas · have a good day —— 一棵由粒子螺旋盘成的电子圣诞树" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #040109; overflow: hidden; }
+  body { touch-action: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<script>
+(() => {
+  'use strict';
+
+  /* ============================================================
+     电子圣诞树 · 单文件粒子动画
+     - 纯 Canvas 2D，零依赖，自适应铺满任意屏幕
+     - 开场：粒子自下方螺旋汇聚成树（约 3 秒），之后无限循环
+     - 调色板：木槿粉 + 浅茄紫
+     - 想改颜色 / 转速 / 文案，只改下面的 PAL / CFG / TEXT
+     ============================================================ */
+
+  const cv = document.getElementById('scene');
+  const ctx = cv.getContext('2d', { alpha: false });
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+  const smooth = (t) => t * t * (3 - 2 * t);
+
+  // 固定种子：每次打开、每张截图都一致
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // 预览用：?t=5 冻结在第 5 秒，方便截图检查
+  const QS = new URLSearchParams(location.search);
+  const FREEZE = QS.has('t') ? Math.max(0, parseFloat(QS.get('t')) || 0) : null;
+
+  /* ------------------------- 可调参数 ------------------------- */
+
+  const PAL = {
+    bg: '#040109',
+    hib: [199, 127, 184],    // 木槿粉（传统色「木槿」#BA79B1 提亮）
+    hibHi: [255, 224, 242],  // 高光
+    aub: [169, 143, 207],    // 浅茄紫
+    aubDeep: [120, 92, 168],
+    heart: [238, 120, 160],  // 树尖的心
+    gold: [231, 206, 123],   // 烟花·金
+    jade: [159, 224, 140]    // 烟花·绿
+  };
+  const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+
+  const CFG = {
+    turns: 7.5,          // 螺旋圈数（resize 时按树形比例自动修正）
+    poolTurns: 3.4,      // 地面光池圈数
+    spin: 0.10,          // 自转角速度 rad/s
+    breathe: 0.014,      // 呼吸缩放幅度
+    intro: 2.9,          // 汇聚时长（秒）
+    fireMin: 2.2,        // 烟花最小间隔（秒）
+    fireMax: 4.8
+  };
+
+  const TEXT = {
+    title: 'Merry Christmas',
+    sub: 'have a good day'
+  };
+
+  /* ------------------------- 画布尺寸 ------------------------- */
+
+  let W = 0, H = 0, DPR = 1, Q = 1;
+  let TH = 0, R0 = 0, TOPY = 0, BASEY = 0, K = 0;
+
+  const CAM = { pitch: 0.205, cp: 0, sp: 0, dist: 0, foc: 0, cx: 0, by: 0 };
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    const cw = Math.max(1, window.innerWidth);
+    const ch = Math.max(1, window.innerHeight);
+    W = cv.width = Math.round(cw * DPR);
+    H = cv.height = Math.round(ch * DPR);
+    cv.style.width = cw + 'px';
+    cv.style.height = ch + 'px';
+
+    K = Math.min(W, H);
+    TH = Math.min(H * 0.64, W * 1.25);        // 树高
+    R0 = Math.min(TH * 0.40, W * 0.34);       // 底部半径
+    BASEY = Math.min(H * 0.86, H * 0.15 + TH + R0 * 0.30);
+    TOPY = BASEY - TH;
+    // 螺旋圈数随高宽比自适应，保证每圈的坡度一致（读起来才像树）
+    CFG.turns = clamp(TH / (R0 * 0.40), 6.5, 13);
+
+    const area = (cw * ch) / 1_050_000;
+    Q = clamp(Math.sqrt(area), 0.5, 1.3);
+
+    CAM.cp = Math.cos(CAM.pitch);
+    CAM.sp = Math.sin(CAM.pitch);
+    CAM.dist = TH * 3.4;
+    CAM.foc = CAM.dist;
+    CAM.cx = W * 0.5;
+    CAM.by = BASEY;
+
+    buildSprites();
+    buildScene();
+    buildGradients();
+  }
+
+  /* ------------------------- 粒子贴图 ------------------------- */
+
+  const SPR = {};
+  let RNG = mulberry32(20251225);
+  const rnd = () => RNG();
+
+  function radial(size, stops) {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    const r = size / 2;
+    const grd = g.createRadialGradient(r, r, 0, r, r, r);
+    for (const [p, col] of stops) grd.addColorStop(p, col);
+    g.fillStyle = grd;
+    g.fillRect(0, 0, size, size);
+    return c;
+  }
+
+  function buildSprites() {
+    const s = Math.max(24, Math.round(K * 0.012));
+    SPR.core = radial(s * 2, [
+      [0, rgba([255, 255, 255], 1)],
+      [0.14, rgba(PAL.hibHi, 0.85)],
+      [0.40, rgba(PAL.hib, 0.28)],
+      [1, rgba(PAL.aubDeep, 0)]
+    ]);
+    SPR.haze = radial(s * 3, [
+      [0, rgba(PAL.hib, 0.22)],
+      [0.38, rgba(PAL.aub, 0.09)],
+      [1, rgba(PAL.aubDeep, 0)]
+    ]);
+    SPR.dust = radial(s * 2, [
+      [0, rgba(PAL.hibHi, 0.42)],
+      [0.30, rgba(PAL.aub, 0.13)],
+      [1, rgba(PAL.aubDeep, 0)]
+    ]);
+    SPR.star = radial(s, [
+      [0, rgba([255, 255, 255], 1)],
+      [0.30, rgba(PAL.hibHi, 0.30)],
+      [1, rgba(PAL.hib, 0)]
+    ]);
+    SPR.heart = radial(s * 2, [
+      [0, rgba([255, 236, 246], 0.95)],
+      [0.16, rgba(PAL.heart, 0.55)],
+      [0.46, rgba([214, 120, 170], 0.26)],
+      [1, rgba([214, 120, 170], 0)]
+    ]);
+    SPR.flare = radial(s * 6, [
+      [0, rgba(PAL.aub, 0.14)],
+      [0.34, rgba(PAL.aubDeep, 0.06)],
+      [1, rgba(PAL.aubDeep, 0)]
+    ]);
+  }
+
+  /* ------------------------- 场景数据 ------------------------- */
+
+  const S = { band: [], mist: [], pool: [], dust: [], heart: [], stars: [], bokeh: [], snow: [], bursts: [] };
+
+  function buildScene() {
+    RNG = mulberry32(20251225);
+    for (const k in S) S[k].length = 0;
+    buildTree();
+    buildPool();
+    buildHeart();
+    buildSky();
+    buildBursts();
+  }
+
+  // 圆锥半径曲线：底宽顶收，最底部微微外翻
+  function radiusAt(t) {
+    const base = Math.pow(1 - t, 0.96);
+    const flare = 1 + 0.10 * Math.exp(-t * 10);
+    return R0 * base * flare;
+  }
+
+  function buildTree() {
+    const nBand = Math.round(13000 * Q);
+    const nGlow = Math.round(3200 * Q);
+    const nDust = Math.round(9000 * Q);
+    const nMist = Math.round(2600 * Q);
+
+    // 0) 锥体雾：把螺旋之间的空隙填成一团发光锥体
+    for (let i = 0; i < nMist; i++) {
+      const t = 1 - Math.pow(1 - rnd(), 1.7);   // 越靠底部越密
+      const shell = rnd() < 0.55;
+      const rad = radiusAt(t) * (shell ? 0.72 + rnd() * 0.50 : Math.pow(rnd(), 0.45));
+      const ang = rnd() * TAU;
+      const u = t * TH + (rnd() - 0.5) * TH * 0.05;
+      S.mist.push({
+        r: rad, th: ang, u,
+        sz: K * (0.026 + rnd() * 0.062),
+        a: (0.009 + rnd() * 0.022) * (0.22 + 0.78 * (rad / R0)),
+        af: clamp(rad / (R0 * 0.5), 0, 1),
+        tw: 0, ph: rnd() * TAU, tws: 0,
+        d0: 0.10 + (1 - t) * 0.3 + rnd() * 1.5,
+        dur: 1.2 + rnd() * 0.6,
+        sr: rad * 1.5 + R0 * 0.4,
+        su: -TH * (0.1 + rnd() * 0.3),
+        sth: ang + 2.5 + rnd() * 2.0
+      });
+    }
+
+    // 1) 螺旋光带：细小亮粒
+    for (let i = 0; i < nBand; i++) {
+      const t = Math.pow(rnd(), 0.92);
+      const ang = t * CFG.turns * TAU + (rnd() - 0.5) * 0.13;
+      const rad = radiusAt(t) * (1 + (rnd() - 0.5) * 0.10);
+      const u = t * TH + (rnd() - 0.5) * TH * 0.007;
+      S.band.push({
+        r: rad, th: ang, u,
+        sz: K * (0.0024 + rnd() * rnd() * 0.0046),
+        a: 0.34 + rnd() * 0.56,
+        af: clamp(rad / (R0 * 0.5), 0, 1),
+        tw: rnd() < 0.4 ? 1 : 0,
+        ph: rnd() * TAU,
+        tws: 1.2 + rnd() * 2.8,
+        d0: 0.18 + (1 - t) * 0.2 + rnd() * 1.25,
+        dur: 0.9 + rnd() * 0.5,
+        sr: rad * 1.2 + R0 * (0.3 + rnd() * 0.9),
+        su: -TH * (0.12 + rnd() * 0.3),
+        sth: ang + 2.2 + rnd() * 2.4
+      });
+    }
+
+    // 2) 光带外侧柔光
+    for (let i = 0; i < nGlow; i++) {
+      const t = Math.pow(rnd(), 0.85);
+      const ang = t * CFG.turns * TAU + (rnd() - 0.5) * 0.30;
+      const rad = radiusAt(t) * (1 + (rnd() - 0.5) * 0.36);
+      const u = t * TH + (rnd() - 0.5) * TH * 0.022;
+      S.band.push({
+        r: rad, th: ang, u,
+        sz: K * (0.008 + rnd() * 0.013),
+        a: 0.030 + rnd() * 0.048,
+        af: clamp(rad / (R0 * 0.5), 0, 1),
+        tw: 0, ph: 0, tws: 0,
+        d0: 0.2 + (1 - t) * 0.2 + rnd() * 1.3,
+        dur: 1.0 + rnd() * 0.5,
+        sr: rad * 1.35 + R0 * (0.35 + rnd() * 0.7),
+        su: -TH * (0.1 + rnd() * 0.32),
+        sth: ang + 2.6 + rnd() * 2.0
+      });
+    }
+
+    // 3) 树身颗粒：锥面上的糖霜
+    for (let i = 0; i < nDust; i++) {
+      const t = Math.pow(rnd(), 0.8);
+      const shell = rnd() < 0.62;
+      const rr = radiusAt(t) * (shell ? 0.88 + rnd() * 0.18 : Math.pow(rnd(), 0.55));
+      const ang = rnd() * TAU;
+      const u = t * TH + (rnd() - 0.5) * TH * 0.03;
+      S.dust.push({
+        r: rr, th: ang, u,
+        sz: K * (0.0018 + rnd() * rnd() * 0.0042),
+        a: shell ? 0.10 + rnd() * 0.26 : 0.04 + rnd() * 0.12,
+        tw: rnd() < 0.5 ? 1 : 0,
+        ph: rnd() * TAU,
+        tws: 0.8 + rnd() * 3.2,
+        d0: 0.15 + (1 - t) * 0.25 + rnd() * 1.5,
+        dur: 1.1 + rnd() * 0.6,
+        sr: R0 * (0.2 + rnd() * 1.9),
+        su: -TH * (0.1 + rnd() * 0.35),
+        sth: ang + 3.0 + rnd() * 2.0
+      });
+    }
+  }
+
+  function buildPool() {
+    const n = Math.round(5200 * Q);
+    for (let i = 0; i < n; i++) {
+      const t = rnd();
+      const rad = R0 * (0.12 + 1.02 * t) * (1 + (rnd() - 0.5) * 0.08);
+      const ang = t * CFG.poolTurns * TAU + (rnd() - 0.5) * 0.30;
+      S.pool.push({
+        r: rad, th: ang, u: (rnd() - 0.5) * TH * 0.003,
+        sz: K * (0.0022 + rnd() * rnd() * 0.0042),
+        a: (0.20 + rnd() * 0.40) * (0.40 + t * 0.90),
+        tw: rnd() < 0.3 ? 1 : 0,
+        ph: rnd() * TAU, tws: 1 + rnd() * 2.5,
+        d0: 0.1 + (1 - t) * 0.35 + rnd() * 1.1,
+        dur: 1.2 + rnd() * 0.6,
+        sr: R0 * 0.05,
+        su: -TH * 0.04,
+        sth: ang - 3.5 - rnd() * 2.0
+      });
+    }
+  }
+
+  function buildHeart() {
+    const n = Math.round(1150 * Q);
+    for (let i = 0; i < n; i++) {
+      const edge = rnd() < 0.42;
+      const u = edge ? 0.80 + rnd() * 0.20 : Math.pow(rnd(), 0.45);
+      const th = rnd() * TAU;
+      const sx = 16 * Math.pow(Math.sin(th), 3);
+      const sy = 13 * Math.cos(th) - 5 * Math.cos(2 * th) - 2 * Math.cos(3 * th) - Math.cos(4 * th);
+      S.heart.push({
+        hx: (sx / 17) * u,
+        hy: (sy / 17) * u,
+        sz: K * (0.0028 + rnd() * rnd() * 0.0045),
+        a: 0.40 + rnd() * 0.50,
+        tw: rnd() < 0.45 ? 1 : 0,
+        ph: rnd() * TAU,
+        tws: 1.6 + rnd() * 3.2,
+        d0: 2.15 + rnd() * 0.55,
+        dur: 0.75 + rnd() * 0.35
+      });
+    }
+  }
+
+  function buildSky() {
+    const nStar = Math.round(1150 * Q) + 260;
+    for (let i = 0; i < nStar; i++) {
+      S.stars.push({
+        x: rnd() * W, y: rnd() * H,
+        sz: K * (0.0014 + Math.pow(rnd(), 3) * 0.0058),
+        a: 0.12 + rnd() * 0.72,
+        ph: rnd() * TAU,
+        sp: 0.4 + rnd() * 1.8,
+        d0: rnd() * 0.9
+      });
+    }
+    for (let i = 0; i < 6; i++) {
+      S.bokeh.push({
+        x: W * (0.08 + rnd() * 0.84),
+        y: H * (0.08 + rnd() * 0.72),
+        sz: K * (0.02 + rnd() * 0.035),
+        a: 0.03 + rnd() * 0.05,
+        ph: rnd() * TAU
+      });
+    }
+    const nSnow = Math.round(220 * Q) + 60;
+    for (let i = 0; i < nSnow; i++) {
+      S.snow.push({
+        x: rnd() * W,
+        y: rnd() * H,
+        v: K * (0.005 + rnd() * 0.020),
+        sw: K * (0.004 + rnd() * 0.018),
+        ph: rnd() * TAU,
+        sz: K * (0.0022 + rnd() * 0.0045),
+        a: 0.08 + rnd() * 0.28
+      });
+    }
+  }
+
+  function buildBursts() {
+    let t = 3.35;
+    while (S.bursts.length < 80) {
+      const left = rnd() < 0.5;
+      S.bursts.push({
+        t,
+        x: (left ? 0.10 + rnd() * 0.22 : 0.68 + rnd() * 0.22) * W,
+        y: (0.20 + rnd() * 0.30) * H,
+        color: rnd() < 0.5 ? 'gold' : 'pink',
+        scale: K * (0.5 + rnd() * 0.3),
+        seed: Math.floor(rnd() * 1e6)
+      });
+      t += CFG.fireMin + rnd() * (CFG.fireMax - CFG.fireMin);
+    }
+  }
+
+  /* ------------------------- 渐变 / 颗粒贴图 ------------------------- */
+
+  let gradVignette = null;
+  let gradScrim = null;
+
+  function buildGradients() {
+    gradVignette = ctx.createRadialGradient(W / 2, H * 0.42, K * 0.08, W / 2, H * 0.50, Math.max(W, H) * 0.80);
+    gradVignette.addColorStop(0, 'rgba(0,0,0,0)');
+    gradVignette.addColorStop(0.70, 'rgba(0,0,0,0.20)');
+    gradVignette.addColorStop(1, 'rgba(0,0,0,0.74)');
+
+    // 文案背后的柔和压暗，保证任何分辨率下都清楚
+    const sx = W * 0.068 + K * 0.13;
+    const sy = BASEY - TH * 0.42 - K * 0.01;
+    gradScrim = ctx.createRadialGradient(sx, sy, K * 0.01, sx, sy, K * 0.34);
+    gradScrim.addColorStop(0, 'rgba(6,3,14,0.42)');
+    gradScrim.addColorStop(0.55, 'rgba(6,3,14,0.22)');
+    gradScrim.addColorStop(1, 'rgba(6,3,14,0)');
+  }
+
+  const NOISE = (() => {
+    const n = document.createElement('canvas');
+    n.width = n.height = 128;
+    const g = n.getContext('2d');
+    const img = g.createImageData(128, 128);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = Math.random() * 255;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    return n;
+  })();
+  let noisePattern = null;
+
+  /* ------------------------- 绘制 ------------------------- */
+
+  const API = { time: 0 };
+
+  function project3D(r, th, u, spin, breathe) {
+    const x = r * Math.cos(th + spin) * breathe;
+    const z = r * Math.sin(th + spin) * breathe;
+    const up = u * breathe;
+    const uu = up * CAM.cp - z * CAM.sp;
+    const zz = up * CAM.sp + z * CAM.cp;
+    const f = CAM.foc / (CAM.dist - zz);
+    return { x: CAM.cx + x * f, y: CAM.by - uu * f, f };
+  }
+
+  function drawLayer(list, time, spin, breathe, alphaMul, sprite) {
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i];
+      let r = p.r, th = p.th, u = p.u, a = p.a;
+
+      if (time < p.d0 + p.dur + 0.15) {
+        const raw = clamp((time - p.d0) / p.dur, 0, 1);
+        const e = easeOut(raw);
+        r = p.sr + (p.r - p.sr) * e;
+        u = p.su + (p.u - p.su) * e;
+        th = p.th + (p.sth - p.th) * (1 - e);
+        a = p.a * clamp(raw * 3.2, 0, 1);
+        if (raw >= 1) { r = p.r; u = p.u; th = p.th; a = p.a; }
+      }
+
+      const pr = project3D(r, th, u, spin, breathe);
+      if (pr.y < -K * 0.25 || pr.y > H + K * 0.25) continue;
+
+      if (p.tw) a *= 0.70 + 0.30 * Math.sin(time * p.tws + p.ph);
+      if (p.af !== undefined) a *= 0.22 + 0.78 * p.af;
+      const depth = clamp(pr.f * 0.70 + 0.30, 0.50, 1.10);
+      const sz = p.sz * pr.f;
+      const al = a * alphaMul * depth;
+      if (al <= 0.004 || sz <= 0.3) continue;
+
+      ctx.globalAlpha = al > 1 ? 1 : al;
+      ctx.drawImage(sprite, pr.x - sz / 2, pr.y - sz / 2, sz, sz);
+    }
+  }
+
+  function drawBaseGlow() {
+    const gw = R0 * 3.1, gh = R0 * 1.15;
+    ctx.globalAlpha = 0.16;
+    ctx.drawImage(SPR.haze, CAM.cx - gw / 2, BASEY - gh * 0.5, gw, gh);
+    ctx.globalAlpha = 0.12;
+    ctx.drawImage(SPR.haze, CAM.cx - gw * 0.30, BASEY - gh * 0.30, gw * 0.6, gh * 0.6);
+  }
+
+  function drawHeart(time) {
+    const hx = CAM.cx;
+    const hy = TOPY - TH * 0.062;
+    const R = R0 * 0.24;
+    // 心形背后的柔光，避免只剩一圈虚线
+    const gw = R * 4.6, gh = R * 4.0;
+    ctx.globalAlpha = 0.30;
+    ctx.drawImage(SPR.haze, hx - gw / 2, hy - gh / 2, gw, gh);
+    for (let i = 0; i < S.heart.length; i++) {
+      const p = S.heart[i];
+      const raw = clamp((time - p.d0) / p.dur, 0, 1);
+      if (raw <= 0) continue;
+      const e = easeOut(raw);
+      const pop = 0.74 + 0.26 * e + 0.03 * Math.sin(time * 3.0);
+      let a = p.a * e;
+      if (p.tw) a *= 0.74 + 0.26 * Math.sin(time * p.tws + p.ph);
+      const sz = p.sz * pop * 1.1;
+      ctx.globalAlpha = clamp(a, 0, 1);
+      ctx.drawImage(
+        SPR.heart,
+        hx + p.hx * R * pop - sz / 2,
+        hy - p.hy * R * pop - sz / 2,
+        sz, sz
+      );
+    }
+  }
+
+  function drawSky(time) {
+    for (const b of S.bokeh) {
+      const a = b.a * (0.7 + 0.3 * Math.sin(time * 0.35 + b.ph));
+      ctx.globalAlpha = clamp(a, 0, 1);
+      ctx.drawImage(SPR.flare, b.x - b.sz / 2, b.y - b.sz / 2, b.sz, b.sz);
+    }
+    for (const s of S.stars) {
+      const fin = clamp((time - s.d0) / 0.8, 0, 1);
+      if (fin <= 0) continue;
+      const tw = 0.55 + 0.45 * Math.sin(time * s.sp + s.ph);
+      const a = s.a * fin * tw;
+      const sz = s.sz * (0.85 + tw * 0.35);
+      ctx.globalAlpha = clamp(a, 0, 1);
+      ctx.drawImage(SPR.star, s.x - sz / 2, s.y - sz / 2, sz, sz);
+    }
+    for (const s of S.snow) {
+      const y = (s.y + time * s.v) % (H + K * 0.1);
+      const x = s.x + Math.sin(time * 0.42 + s.ph) * s.sw;
+      const sz = s.sz;
+      ctx.globalAlpha = clamp(s.a * (0.6 + 0.4 * Math.sin(time * 0.9 + s.ph)), 0, 1);
+      ctx.drawImage(SPR.dust, x - sz / 2, y - sz / 2, sz, sz);
+    }
+  }
+
+  function drawBursts(time) {
+    for (const b of S.bursts) {
+      const age = time - b.t;
+      if (age < 0 || age > 1.25) continue;
+      const p = age / 1.25;
+      const r2 = mulberry32(b.seed);
+      const cols = b.color === 'gold' ? [PAL.gold, PAL.jade] : [PAL.heart, PAL.hibHi];
+      for (let i = 0; i < 52; i++) {
+        const ang = (i / 52) * TAU + r2() * 0.3;
+        const spd = b.scale * (0.25 + Math.pow(r2(), 0.6) * 0.85);
+        const dx = Math.cos(ang) * spd * p * 1.35;
+        const dy = Math.sin(ang) * spd * p * 1.35 + b.scale * 0.55 * p * p;
+        const a = Math.pow(1 - p, 1.7) * (0.5 + r2() * 0.5);
+        const sz = K * (0.004 + r2() * 0.006) * (1.4 - p * 0.6);
+        ctx.globalAlpha = clamp(a * 0.85, 0, 1);
+        ctx.fillStyle = rgba(cols[i % 2], 0.85);
+        ctx.beginPath();
+        ctx.arc(b.x + dx, b.y + dy, Math.max(0.5, sz), 0, TAU);
+        ctx.fill();
+      }
+    }
+  }
+
+  function drawText(time) {
+    const fin = clamp((time - CFG.intro * 0.94) / 0.9, 0, 1);
+    if (fin <= 0) return;
+    const e = smooth(fin);
+    const fs1 = Math.min(K * 0.034, W * 0.045);
+    const fs2 = fs1 * 0.30;
+    const x = W * 0.068;
+    const y = BASEY - TH * 0.42;
+    const rise = (1 - e) * fs1 * 0.5;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    if (gradScrim) {
+      ctx.globalAlpha = e;
+      ctx.fillStyle = gradScrim;
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = 1;
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.shadowColor = rgba(PAL.hib, 0.5);
+    ctx.shadowBlur = fs1 * 0.5;
+
+    ctx.font = `italic ${fs1}px "Cormorant Garamond","Playfair Display","Bodoni MT",Georgia,"Times New Roman",serif`;
+    ctx.fillStyle = `rgba(255,244,250,${0.90 * e})`;
+    ctx.fillText(TEXT.title, x, y + rise);
+    ctx.fillText(TEXT.title, x, y + rise);
+
+    ctx.shadowBlur = fs2 * 1.6;
+    ctx.font = `italic ${fs2}px "Helvetica Neue",Helvetica,Arial,"Microsoft YaHei",sans-serif`;
+    ctx.fillStyle = `rgba(255,238,248,${0.55 * e})`;
+    ctx.fillText(TEXT.sub, x + fs1 * 0.05, y + rise + fs2 * 2.6);
+
+    ctx.restore();
+  }
+
+  function bloom() {
+    const div = 4;
+    const bw = Math.max(2, Math.round(W / div));
+    const bh = Math.max(2, Math.round(H / div));
+    if (!bloom.cv) {
+      bloom.cv = document.createElement('canvas');
+      bloom.cx = bloom.cv.getContext('2d');
+    }
+    const bc = bloom.cv, bx = bloom.cx;
+    if (bc.width !== bw || bc.height !== bh) { bc.width = bw; bc.height = bh; }
+    bx.globalCompositeOperation = 'copy';
+    bx.filter = `blur(${Math.max(1.2, bw * 0.008)}px)`;
+    bx.drawImage(cv, 0, 0, bw, bh);
+    bx.filter = 'none';
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.26;
+    ctx.drawImage(bc, 0, 0, W, H);
+    ctx.globalAlpha = 0.14;
+    ctx.drawImage(bc, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function finish() {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = gradVignette;
+    ctx.fillRect(0, 0, W, H);
+
+    if (!noisePattern) noisePattern = ctx.createPattern(NOISE, 'repeat');
+    if (noisePattern) {
+      ctx.save();
+      ctx.globalAlpha = 0.028;
+      ctx.globalCompositeOperation = 'lighter';
+      const ox = (API.time * 37) % 128;
+      const oy = (API.time * 61) % 128;
+      ctx.translate(-ox, -oy);
+      ctx.fillStyle = noisePattern;
+      ctx.fillRect(0, 0, W + 128, H + 128);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function draw(time) {
+    API.time = time;
+    const breathe = 1 + CFG.breathe * Math.sin(time * 0.85);
+    const spin = time * CFG.spin + 0.6;
+    const introGlow = 0.6 + 0.4 * clamp(time / CFG.intro, 0, 1);
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = PAL.bg;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.globalCompositeOperation = 'lighter';
+
+    drawSky(time);
+    drawBaseGlow();
+    drawLayer(S.pool, time, spin * 1.35, breathe, 1, SPR.core);
+    drawLayer(S.mist, time, spin, breathe, 1, SPR.haze);
+    drawLayer(S.dust, time, spin, breathe, 1, SPR.dust);
+    drawLayer(S.band, time, spin, breathe, introGlow, SPR.core);
+    drawHeart(time);
+    drawBursts(time);
+    drawText(time);
+
+    bloom();
+    finish();
+  }
+
+  /* ------------------------- 循环 ------------------------- */
+
+  let start = 0, last = 0, slow = 0, downgraded = 0;
+
+  function loop(now) {
+    const t = now / 1000 - start;
+    draw(t);
+
+    const dt = now - last;
+    last = now;
+    if (t > 1.4 && t < CFG.intro + 2.5) {
+      slow = slow * 0.9 + dt * 0.1;
+      if (slow > 26 && downgraded < 1) {
+        downgraded++;
+        Q *= 0.62;
+        buildScene();
+      }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  /* ------------------------- 交互 ------------------------- */
+
+  function addBurstAt(x, y) {
+    S.bursts.push({
+      t: API.time + 0.02, x, y,
+      color: Math.random() < 0.5 ? 'gold' : 'pink',
+      scale: K * 0.45,
+      seed: Math.floor(Math.random() * 1e6)
+    });
+    if (S.bursts.length > 140) S.bursts.splice(80, 1);
+  }
+
+  window.addEventListener('pointerdown', (e) => {
+    if (FREEZE !== null) return;
+    addBurstAt(e.clientX * DPR, e.clientY * DPR);
+  }, { passive: true });
+
+  let rid = 0;
+  window.addEventListener('resize', () => {
+    clearTimeout(rid);
+    rid = setTimeout(() => { resize(); if (FREEZE !== null) draw(FREEZE); }, 140);
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && FREEZE === null) start = performance.now() / 1000 - API.time;
+  });
+
+  /* ------------------------- 启动 ------------------------- */
+
+  resize();
+
+  if (FREEZE !== null) {
+    draw(FREEZE);
+  } else {
+    start = performance.now() / 1000;
+    requestAnimationFrame((n) => { last = n; loop(n); });
+  }
+})();
+</script>
+</body>
+</html>
