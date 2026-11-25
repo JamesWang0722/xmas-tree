@@ -199,9 +199,14 @@
 
   const S = { band: [], mist: [], pool: [], dust: [], heart: [], stars: [], bokeh: [], snow: [], bursts: [], meteors: [] };
 
+  // 流星排期指针：必须放在 S 外面，否则 rebuild 时会被当成数组清空
+  let meteorNext = 3.2;
+
   function buildScene() {
     RNG = mulberry32(20251225);
-    for (const k in S) S[k].length = 0;
+    for (const k in S) {
+      if (Array.isArray(S[k])) S[k].length = 0;
+    }
     buildTree();
     buildPool();
     buildHeart();
@@ -476,18 +481,18 @@
   }
 
   function buildMeteors() {
-    S.meteorNext = 3.2;
-    while (S.meteorNext < 40) {
-      pushMeteor(S.meteorNext);
-      S.meteorNext += 1.9 + rnd() * 2.6;
+    meteorNext = 3.2;
+    while (meteorNext < 40) {
+      pushMeteor(meteorNext);
+      meteorNext += 1.9 + rnd() * 2.6;
     }
   }
 
   function ensureMeteors(time) {
     let guard = 0;
-    while (S.meteorNext < time + 30 && guard++ < 40) {
-      pushMeteor(S.meteorNext);
-      S.meteorNext += 1.9 + rnd() * 2.6;
+    while (meteorNext < time + 30 && guard++ < 400) {
+      pushMeteor(meteorNext);
+      meteorNext += 1.9 + rnd() * 2.6;
     }
     if (S.meteors.length > 90) S.meteors.splice(0, 45);
   }
@@ -806,10 +811,17 @@
   /* ------------------------- 循环 ------------------------- */
 
   let start = 0, last = 0, slow = 0, downgraded = 0;
+  let frames = 0, lastTick = 0;
 
   function loop(now) {
     const t = now / 1000 - start;
-    draw(t);
+    // 单帧异常绝不能中断无限循环：吞掉错误、继续画
+    try {
+      draw(t);
+    } catch (err) {
+      if (!loop.logged) { loop.logged = 1; console.error('[xmas-tree] frame error', err); }
+    }
+    frames++;
 
     const dt = now - last;
     last = now;
@@ -818,7 +830,7 @@
       if (slow > 26 && downgraded < 2) {
         downgraded++;
         Q *= 0.62;
-        buildScene();
+        try { buildScene(); } catch (err) { console.error('[xmas-tree] rebuild error', err); }
       }
     }
     requestAnimationFrame(loop);
@@ -844,14 +856,45 @@
   let rid = 0;
   window.addEventListener('resize', () => {
     clearTimeout(rid);
-    rid = setTimeout(() => { resize(); if (FREEZE !== null) draw(FREEZE); }, 140);
+    rid = setTimeout(() => {
+      try {
+        resize();
+        if (FREEZE !== null) draw(FREEZE);
+      } catch (err) {
+        console.error('[xmas-tree] resize error', err);
+      }
+    }, 140);
   });
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && FREEZE === null) start = performance.now() / 1000 - API.time;
   });
 
+  // 看门狗：若可见状态下 2.5 秒没有任何新帧，重启循环
+  let restarting = 0;
+  setInterval(() => {
+    if (FREEZE !== null || document.hidden) { lastTick = frames; return; }
+    if (frames === lastTick && !restarting) {
+      restarting = 1;
+      try { resize(); } catch (err) { console.error('[xmas-tree] watchdog resize error', err); }
+      start = performance.now() / 1000 - API.time;
+      last = performance.now();
+      requestAnimationFrame(loop);
+      setTimeout(() => { restarting = 0; }, 1500);
+    }
+    lastTick = frames;
+  }, 2500);
+
   /* ------------------------- 启动 ------------------------- */
+
+  // 调试口子：window.__xmas.info() 查看当前规模 / 粒子数
+  window.__xmas = {
+    info: () => ({
+      W, H, Q: Math.round(Q * 100) / 100, K: Math.round(K), TH: Math.round(TH), R0: Math.round(R0),
+      band: S.band.length, dust: S.dust.length, mist: S.mist.length, pool: S.pool.length,
+      stars: S.stars.length, meteors: S.meteors.length, t: Math.round(API.time * 10) / 10
+    })
+  };
 
   resize();
 
