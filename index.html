@@ -80,15 +80,16 @@
 
   /* ------------------------- 画布尺寸 ------------------------- */
 
-  let W = 0, H = 0, DPR = 1, Q = 1, BRIGHT = 1;
+  let W = 0, H = 0, DPR = 1, Q = 1, BRIGHT = 1, COARSE = false, DPRCAP = 2;
   let TH = 0, R0 = 0, TOPY = 0, BASEY = 0, K = 0;
 
   const CAM = { pitch: 0.205, cp: 0, sp: 0, dist: 0, foc: 0, cx: 0, by: 0 };
 
   function resize() {
-    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    DPR = Math.min(window.devicePixelRatio || 1, DPRCAP);
     const cw = Math.max(1, window.innerWidth);
     const ch = Math.max(1, window.innerHeight);
+    COARSE = cw < 820 || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
     W = cv.width = Math.round(cw * DPR);
     H = cv.height = Math.round(ch * DPR);
     cv.style.width = cw + 'px';
@@ -104,6 +105,9 @@
 
     // 粒子数量按"画布像素"算密度：手机 DPR 高，若按 CSS 尺寸算会明显偏稀、偏暗
     Q = clamp(Math.sqrt((W * H) / 1_250_000), 0.66, 1.5);
+    // 窄屏兜底：即便为了性能降了 DPR，粒子数量也不掉下去
+    if (cw < 820) Q = Math.max(Q, 0.98);
+    Q *= QADJ;
     // 小屏亮度补偿：手机屏小、像素少，同样的粒子密度看起来更暗
     BRIGHT = clamp(1.26 - (cw / 1450) * 0.26, 1.0, 1.26);
 
@@ -116,6 +120,7 @@
 
     buildSprites();
     buildScene();
+    bakeStatic();
     buildGradients();
   }
 
@@ -201,6 +206,9 @@
 
   const S = { band: [], mist: [], pool: [], dust: [], heart: [], stars: [], bokeh: [], snow: [], bursts: [], meteors: [] };
 
+  // 静态层烘焙：星空 / 锥体雾+星尘 不逐帧重画，直接贴图（省掉每帧上万次 drawImage）
+  const BAKE = { sky: null, dust: null };
+
   // 流星排期指针：必须放在 S 外面，否则 rebuild 时会被当成数组清空
   let meteorNext = 3.2;
 
@@ -217,6 +225,50 @@
     buildMeteors();
   }
 
+  // 把"几乎静止"的层一次性画进离屏画布，之后每帧只贴一张图
+  function bakeStatic() {
+    BAKE.sky = null;
+    BAKE.dust = null;
+
+    const sky = document.createElement('canvas');
+    sky.width = W; sky.height = H;
+    const sg = sky.getContext('2d');
+    sg.globalCompositeOperation = 'lighter';
+    for (const b of S.bokeh) {
+      sg.globalAlpha = clamp(b.a * 0.92, 0, 1);
+      sg.drawImage(SPR.flare, b.x - b.sz / 2, b.y - b.sz / 2, b.sz, b.sz);
+    }
+    for (const s of S.stars) {
+      if (s.live) continue;
+      sg.globalAlpha = clamp(s.a * 0.66, 0, 1);   // 取闪烁的中位亮度
+      const spr = s.c === 1 ? SPR.mGold : (s.c === 2 ? SPR.mPink : SPR.star);
+      sg.drawImage(spr, s.x - s.sz / 2, s.y - s.sz / 2, s.sz, s.sz);
+    }
+    sg.globalAlpha = 1;
+    BAKE.sky = sky;
+
+    const dk = document.createElement('canvas');
+    dk.width = W; dk.height = H;
+    const dg = dk.getContext('2d');
+    dg.globalCompositeOperation = 'lighter';
+    const put = (p, sprite) => {
+      if (p.live) return;
+      const pr = project3D(p.r, p.th, p.u, 0, 1);   // spin=0 / breathe=1 的基准姿态
+      if (pr.y < -K * 0.25 || pr.y > H + K * 0.25) return;
+      let a = p.a;
+      if (p.af !== undefined) a *= 0.22 + 0.78 * p.af;
+      const depth = clamp(pr.f * 0.70 + 0.30, 0.50, 1.10);
+      const sz = p.sz * pr.f;
+      if (a * depth <= 0.004 || sz <= 0.3) return;
+      dg.globalAlpha = a * depth > 1 ? 1 : a * depth;
+      dg.drawImage(sprite, pr.x - sz / 2, pr.y - sz / 2, sz, sz);
+    };
+    for (const p of S.mist) put(p, SPR.haze);
+    for (const p of S.dust) put(p, SPR.dust);
+    dg.globalAlpha = 1;
+    BAKE.dust = dk;
+  }
+
   // 圆锥半径曲线：底宽顶收，最底部微微外翻
   function radiusAt(t) {
     const base = Math.pow(1 - t, 0.96);
@@ -229,7 +281,7 @@
     const nGlow = Math.round(1600 * Q);
     const nDust = Math.round(6000 * Q);
     const nMist = Math.round(2400 * Q);
-    const nInner = Math.round(15000 * Q);
+    const nInner = Math.round(21000 * Q);
 
     // 0) 锥体雾：把螺旋之间的空隙填成一团发光锥体
     for (let i = 0; i < nMist; i++) {
@@ -348,20 +400,23 @@
         dur: 1.0 + rnd() * 0.6,
         sr: R0 * (0.3 + rnd() * 1.6),
         su: -TH * (0.1 + rnd() * 0.32),
-        sth: ang + 2.6 + rnd() * 2.2
+        sth: ang + 2.6 + rnd() * 2.2,
+        live: sparkle ? 1 : 0     // 闪烁的少数留在实时层
       });
     }
   }
 
   function buildPool() {
-    const n = Math.round(5200 * Q);
+    // 地面光池：颗粒略放大、数量收一点，视觉差不多但每帧少画两千次
+    const n = Math.round(COARSE ? 3400 * Q : 5200 * Q);
+    const szMul = COARSE ? 1.28 : 1;
     for (let i = 0; i < n; i++) {
       const t = rnd();
       const rad = R0 * (0.12 + 1.02 * t) * (1 + (rnd() - 0.5) * 0.08);
       const ang = t * CFG.poolTurns * TAU + (rnd() - 0.5) * 0.30;
       S.pool.push({
         r: rad, th: ang, u: (rnd() - 0.5) * TH * 0.003,
-        sz: K * (0.0022 + rnd() * rnd() * 0.0042),
+        sz: K * (0.0022 + rnd() * rnd() * 0.0042) * szMul,
         a: (0.20 + rnd() * 0.40) * (0.40 + t * 0.90),
         tw: rnd() < 0.3 ? 1 : 0,
         ph: rnd() * TAU, tws: 1 + rnd() * 2.5,
@@ -397,8 +452,9 @@
   }
 
   function buildSky() {
-    // 主星场（含 8% 粉/金星点）
-    const nStar = Math.round(2300 * Q) + 700;
+    // 主星场（含 8% 粉/金星点）；大部分进烘焙层，前 380 颗留作实时闪烁
+    const nLive = 380;
+    const nStar = Math.round(3600 * Q) + 1400;
     for (let i = 0; i < nStar; i++) {
       const tint = rnd();
       S.stars.push({
@@ -408,11 +464,12 @@
         ph: rnd() * TAU,
         sp: 0.4 + rnd() * 1.8,
         d0: rnd() * 0.9,
-        c: tint < 0.05 ? 1 : (tint < 0.09 ? 2 : 0)
+        c: tint < 0.05 ? 1 : (tint < 0.09 ? 2 : 0),
+        live: i < nLive ? 1 : 0
       });
     }
     // 远景细碎星尘，补一层"银河感"
-    const nFine = Math.round(1100 * Q) + 300;
+    const nFine = Math.round(1800 * Q) + 600;
     for (let i = 0; i < nFine; i++) {
       S.stars.push({
         x: rnd() * W, y: rnd() * H,
@@ -587,9 +644,10 @@
     return { x: CAM.cx + x * f, y: CAM.by - uu * f, f };
   }
 
-  function drawLayer(list, time, spin, breathe, alphaMul, sprite) {
+  function drawLayer(list, time, spin, breathe, alphaMul, sprite, liveOnly) {
     for (let i = 0; i < list.length; i++) {
       const p = list[i];
+      if (liveOnly && !p.live) continue;
       let r = p.r, th = p.th, u = p.u, a = p.a;
 
       if (time < p.d0 + p.dur + 0.15) {
@@ -653,12 +711,17 @@
   }
 
   function drawSky(time) {
-    for (const b of S.bokeh) {
-      const a = b.a * (0.7 + 0.3 * Math.sin(time * 0.35 + b.ph));
-      ctx.globalAlpha = clamp(a, 0, 1);
-      ctx.drawImage(SPR.flare, b.x - b.sz / 2, b.y - b.sz / 2, b.sz, b.sz);
+    // 星空主体：烘焙层一次贴图，开场 1.6 秒内淡入
+    if (BAKE.sky) {
+      const fin = clamp((time - 0.15) / 1.5, 0, 1);
+      if (fin > 0) {
+        ctx.globalAlpha = fin;
+        ctx.drawImage(BAKE.sky, 0, 0);
+      }
     }
+    // 少量实时闪烁星，保住"星星在眨眼"的感觉
     for (const s of S.stars) {
+      if (!s.live) continue;
       const fin = clamp((time - s.d0) / 0.8, 0, 1);
       if (fin <= 0) continue;
       const tw = 0.55 + 0.45 * Math.sin(time * s.sp + s.ph);
@@ -738,7 +801,7 @@
   }
 
   function bloom() {
-    const div = 4;
+    const div = COARSE ? 6 : 4;   // 手机用更小的降采样画布，blur 更便宜
     const bw = Math.max(2, Math.round(W / div));
     const bh = Math.max(2, Math.round(H / div));
     if (!bloom.cv) {
@@ -753,10 +816,15 @@
     bx.filter = 'none';
 
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.26 * BRIGHT;
-    ctx.drawImage(bc, 0, 0, W, H);
-    ctx.globalAlpha = 0.14 * BRIGHT;
-    ctx.drawImage(bc, 0, 0, W, H);
+    if (COARSE) {
+      ctx.globalAlpha = 0.34 * BRIGHT;
+      ctx.drawImage(bc, 0, 0, W, H);
+    } else {
+      ctx.globalAlpha = 0.26 * BRIGHT;
+      ctx.drawImage(bc, 0, 0, W, H);
+      ctx.globalAlpha = 0.14 * BRIGHT;
+      ctx.drawImage(bc, 0, 0, W, H);
+    }
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
   }
@@ -767,7 +835,7 @@
     ctx.fillRect(0, 0, W, H);
 
     if (!noisePattern) noisePattern = ctx.createPattern(NOISE, 'repeat');
-    if (noisePattern) {
+    if (!COARSE && noisePattern) {
       ctx.save();
       ctx.globalAlpha = 0.028;
       ctx.globalCompositeOperation = 'lighter';
@@ -800,8 +868,22 @@
     drawMeteors(time);
     drawBaseGlow();
     drawLayer(S.pool, time, spin * 1.35, breathe, BR, SPR.core);
-    drawLayer(S.mist, time, spin, breathe, BR, SPR.haze);
-    drawLayer(S.dust, time, spin, breathe, BR, SPR.dust);
+
+    // 锥体雾 + 星尘：落位后改用烘焙层（1 次贴图），只有闪烁粒子留在实时层
+    if (time > CFG.intro + 0.4 && BAKE.dust) {
+      ctx.save();
+      ctx.translate(CAM.cx, CAM.by);
+      ctx.scale(breathe, breathe);
+      ctx.translate(-CAM.cx, -CAM.by);
+      ctx.globalAlpha = 1;
+      ctx.drawImage(BAKE.dust, 0, 0);
+      ctx.restore();
+      drawLayer(S.dust, time, 0, breathe, BR, SPR.dust, true);
+    } else {
+      drawLayer(S.mist, time, 0, breathe, BR, SPR.haze);
+      drawLayer(S.dust, time, 0, breathe, BR, SPR.dust);
+    }
+
     drawLayer(S.band, time, spin, breathe, introGlow * BR, SPR.core);
     drawHeart(time);
     drawBursts(time);
@@ -813,7 +895,7 @@
 
   /* ------------------------- 循环 ------------------------- */
 
-  let start = 0, last = 0, slow = 0, downgraded = 0;
+  let start = 0, last = 0, slow = 0, perfStep = 0, QADJ = 1;
   let frames = 0, lastTick = 0;
 
   function loop(now) {
@@ -828,12 +910,16 @@
 
     const dt = now - last;
     last = now;
-    if (t > 1.4 && t < 12 && downgraded < 2) {
+    // 自适应画质：掉帧就依次降渲染分辨率（粒子数量不变），实在不行才降粒子
+    if (t > 1.4 && t < 16 && perfStep < 3) {
       slow = slow * 0.9 + dt * 0.1;
-      if (slow > 32 && downgraded < 2) {
-        downgraded++;
-        Q *= 0.82;   // 轻微降档，避免降完又变稀疏
-        try { buildScene(); } catch (err) { console.error('[xmas-tree] rebuild error', err); }
+      if (slow > 26) {
+        perfStep++;
+        slow = 0;
+        if (perfStep === 1) DPRCAP = 1.5;
+        else if (perfStep === 2) DPRCAP = 1.25;
+        else QADJ = 0.8;
+        try { resize(); } catch (err) { console.error('[xmas-tree] adapt error', err); }
       }
     }
     requestAnimationFrame(loop);
@@ -896,8 +982,15 @@
 
   // 调试口子：window.__xmas.info() 查看当前规模 / 粒子数
   window.__xmas = {
+    draw: (t) => draw(t),
+    bench: (n) => {
+      const k = n || 20;
+      const t0 = performance.now();
+      for (let i = 0; i < k; i++) draw(API.time + i * 0.016);
+      return Math.round((performance.now() - t0) / k * 100) / 100;
+    },
     info: () => ({
-      W, H, Q: Math.round(Q * 100) / 100, K: Math.round(K), TH: Math.round(TH), R0: Math.round(R0),
+      W, H, DPR, COARSE, Q: Math.round(Q * 100) / 100, K: Math.round(K), TH: Math.round(TH), R0: Math.round(R0),
       band: S.band.length, dust: S.dust.length, mist: S.mist.length, pool: S.pool.length,
       stars: S.stars.length, meteors: S.meteors.length, t: Math.round(API.time * 10) / 10
     })
