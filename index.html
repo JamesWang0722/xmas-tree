@@ -366,10 +366,10 @@
       const left = rnd() < 0.5;
       S.bursts.push({
         t,
-        x: (left ? 0.10 + rnd() * 0.22 : 0.68 + rnd() * 0.22) * W,
-        y: (0.20 + rnd() * 0.30) * H,
+        x: (left ? 0.07 + rnd() * 0.17 : 0.74 + rnd() * 0.19) * W,
+        y: (left ? 0.17 + rnd() * 0.20 : 0.26 + rnd() * 0.32) * H,
         color: rnd() < 0.5 ? 'gold' : 'pink',
-        scale: K * (0.5 + rnd() * 0.3),
+        scale: K * (0.05 + rnd() * 0.09),
         seed: Math.floor(rnd() * 1e6)
       });
       t += CFG.fireMin + rnd() * (CFG.fireMax - CFG.fireMin);
@@ -521,13 +521,13 @@
       const p = age / 1.25;
       const r2 = mulberry32(b.seed);
       const cols = b.color === 'gold' ? [PAL.gold, PAL.jade] : [PAL.heart, PAL.hibHi];
-      for (let i = 0; i < 52; i++) {
-        const ang = (i / 52) * TAU + r2() * 0.3;
+      for (let i = 0; i < 44; i++) {
+        const ang = (i / 44) * TAU + r2() * 0.3;
         const spd = b.scale * (0.25 + Math.pow(r2(), 0.6) * 0.85);
         const dx = Math.cos(ang) * spd * p * 1.35;
-        const dy = Math.sin(ang) * spd * p * 1.35 + b.scale * 0.55 * p * p;
+        const dy = Math.sin(ang) * spd * p * 1.35 + b.scale * 0.65 * p * p;
         const a = Math.pow(1 - p, 1.7) * (0.5 + r2() * 0.5);
-        const sz = K * (0.004 + r2() * 0.006) * (1.4 - p * 0.6);
+        const sz = K * (0.0020 + r2() * 0.0032) * (1.4 - p * 0.6);
         ctx.globalAlpha = clamp(a * 0.85, 0, 1);
         ctx.fillStyle = rgba(cols[i % 2], 0.85);
         ctx.beginPath();
@@ -542,7 +542,7 @@
     if (fin <= 0) return;
     const e = smooth(fin);
     const fs1 = Math.min(K * 0.034, W * 0.045);
-    const fs2 = fs1 * 0.30;
+    const fs2 = fs1 * 0.34;
     const x = W * 0.068;
     const y = BASEY - TH * 0.42;
     const rise = (1 - e) * fs1 * 0.5;
@@ -567,7 +567,7 @@
 
     ctx.shadowBlur = fs2 * 1.6;
     ctx.font = `italic ${fs2}px "Helvetica Neue",Helvetica,Arial,"Microsoft YaHei",sans-serif`;
-    ctx.fillStyle = `rgba(255,238,248,${0.55 * e})`;
+    ctx.fillStyle = `rgba(255,238,248,${0.62 * e})`;
     ctx.fillText(TEXT.sub, x + fs1 * 0.05, y + rise + fs2 * 2.6);
 
     ctx.restore();
@@ -672,7 +672,7 @@
     S.bursts.push({
       t: API.time + 0.02, x, y,
       color: Math.random() < 0.5 ? 'gold' : 'pink',
-      scale: K * 0.45,
+      scale: K * 0.07,
       seed: Math.floor(Math.random() * 1e6)
     });
     if (S.bursts.length > 140) S.bursts.splice(80, 1);
