@@ -80,7 +80,7 @@
 
   /* ------------------------- 画布尺寸 ------------------------- */
 
-  let W = 0, H = 0, DPR = 1, Q = 1;
+  let W = 0, H = 0, DPR = 1, Q = 1, BRIGHT = 1;
   let TH = 0, R0 = 0, TOPY = 0, BASEY = 0, K = 0;
 
   const CAM = { pitch: 0.205, cp: 0, sp: 0, dist: 0, foc: 0, cx: 0, by: 0 };
@@ -102,8 +102,10 @@
     // 螺旋圈数随高宽比自适应，保证每圈的坡度一致（读起来才像树）
     CFG.turns = clamp(TH / (R0 * 0.40), 6.5, 13);
 
-    const area = (cw * ch) / 1_050_000;
-    Q = clamp(Math.sqrt(area), 0.5, 1.3);
+    // 粒子数量按"画布像素"算密度：手机 DPR 高，若按 CSS 尺寸算会明显偏稀、偏暗
+    Q = clamp(Math.sqrt((W * H) / 1_250_000), 0.66, 1.5);
+    // 小屏亮度补偿：手机屏小、像素少，同样的粒子密度看起来更暗
+    BRIGHT = clamp(1.26 - (cw / 1450) * 0.26, 1.0, 1.26);
 
     CAM.cp = Math.cos(CAM.pitch);
     CAM.sp = Math.sin(CAM.pitch);
@@ -544,8 +546,8 @@
   function buildGradients() {
     gradVignette = ctx.createRadialGradient(W / 2, H * 0.42, K * 0.08, W / 2, H * 0.50, Math.max(W, H) * 0.80);
     gradVignette.addColorStop(0, 'rgba(0,0,0,0)');
-    gradVignette.addColorStop(0.70, 'rgba(0,0,0,0.20)');
-    gradVignette.addColorStop(1, 'rgba(0,0,0,0.74)');
+    gradVignette.addColorStop(0.70, 'rgba(0,0,0,0.17)');
+    gradVignette.addColorStop(1, 'rgba(0,0,0,0.68)');
 
     // 文案背后的柔和压暗，保证任何分辨率下都清楚
     const sx = W * 0.068 + K * 0.13;
@@ -640,7 +642,7 @@
       let a = p.a * e;
       if (p.tw) a *= 0.74 + 0.26 * Math.sin(time * p.tws + p.ph);
       const sz = p.sz * pop * 1.1;
-      ctx.globalAlpha = clamp(a, 0, 1);
+      ctx.globalAlpha = clamp(a * BRIGHT, 0, 1);
       ctx.drawImage(
         SPR.heart,
         hx + p.hx * R * pop - sz / 2,
@@ -751,9 +753,9 @@
     bx.filter = 'none';
 
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.26;
+    ctx.globalAlpha = 0.26 * BRIGHT;
     ctx.drawImage(bc, 0, 0, W, H);
-    ctx.globalAlpha = 0.14;
+    ctx.globalAlpha = 0.14 * BRIGHT;
     ctx.drawImage(bc, 0, 0, W, H);
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
@@ -785,6 +787,7 @@
     const breathe = 1 + CFG.breathe * Math.sin(time * 0.85);
     const spin = time * CFG.spin + 0.6;
     const introGlow = 0.6 + 0.4 * clamp(time / CFG.intro, 0, 1);
+    const BR = BRIGHT;   // 小屏补偿：手机屏幕小、像素少，同样密度看起来更暗
 
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
@@ -796,10 +799,10 @@
     drawSky(time);
     drawMeteors(time);
     drawBaseGlow();
-    drawLayer(S.pool, time, spin * 1.35, breathe, 1, SPR.core);
-    drawLayer(S.mist, time, spin, breathe, 1, SPR.haze);
-    drawLayer(S.dust, time, spin, breathe, 1, SPR.dust);
-    drawLayer(S.band, time, spin, breathe, introGlow, SPR.core);
+    drawLayer(S.pool, time, spin * 1.35, breathe, BR, SPR.core);
+    drawLayer(S.mist, time, spin, breathe, BR, SPR.haze);
+    drawLayer(S.dust, time, spin, breathe, BR, SPR.dust);
+    drawLayer(S.band, time, spin, breathe, introGlow * BR, SPR.core);
     drawHeart(time);
     drawBursts(time);
     drawText(time);
