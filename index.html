@@ -873,6 +873,10 @@
   // 看门狗：若可见状态下 2.5 秒没有任何新帧，重启循环
   let restarting = 0;
   setInterval(() => {
+    // 场景自愈：粒子被清空（任何原因）就重建一次
+    if (!document.hidden && FREEZE === null && (!S.band.length || !S.stars.length)) {
+      try { buildScene(); } catch (err) { console.error('[xmas-tree] self-heal error', err); }
+    }
     if (FREEZE !== null || document.hidden) { lastTick = frames; return; }
     if (frames === lastTick && !restarting) {
       restarting = 1;
